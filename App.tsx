@@ -3,6 +3,7 @@ import * as FileSystem from "expo-file-system";
 import * as SQLite from "expo-sqlite";
 import { StatusBar } from "expo-status-bar";
 import Fuse from "fuse.js";
+import * as Network from "expo-network";
 import React, { useEffect, useState } from "react";
 import {
   FlatList,
@@ -14,6 +15,7 @@ import {
   View,
 } from "react-native";
 import useSWR, { SWRConfig } from "swr";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 function useDebounce(value: string, delay: number = 200) {
   // State and setters for debounced value
@@ -48,23 +50,52 @@ function execute(db: SQLite.WebSQLDatabase, sql: string, args: string[] = []) {
   });
 }
 
+const DIR = FileSystem.documentDirectory + "SQLite";
+const DB_PATH = DIR + "/dict.db";
+
 async function openDatabase(): Promise<SQLite.WebSQLDatabase> {
-  const dbPath = FileSystem.documentDirectory + "SQLite/dict.db";
-  if (
-    !(await FileSystem.getInfoAsync(FileSystem.documentDirectory + "SQLite"))
-      .exists
-  ) {
-    await FileSystem.makeDirectoryAsync(
-      FileSystem.documentDirectory + "SQLite"
-    );
+  // Create the SQLite directory (needed by the expo sqlite library)
+  if (!(await FileSystem.getInfoAsync(DIR)).exists) {
+    await FileSystem.makeDirectoryAsync(DIR);
   }
-  if (!(await FileSystem.getInfoAsync(dbPath)).exists) {
+
+  // Move the asset to the sqlite directory if there is no db there yet (on first app boot)
+  if (!(await FileSystem.getInfoAsync(DB_PATH)).exists) {
     await FileSystem.downloadAsync(
       Asset.fromModule(require("./dict.db")).uri,
-      dbPath
+      DB_PATH
     );
   }
+
   return SQLite.openDatabase("dict.db");
+}
+
+async function updateDatabase(onUpdate: () => void): Promise<void> {
+  const daysInMs = 24 * 60 * 60 * 1000;
+  const networkState = await Network.getNetworkStateAsync();
+  const lastSavedRaw = await AsyncStorage.getItem("@fetch");
+  let lastSaved = lastSavedRaw ? new Date(JSON.parse(lastSavedRaw)) : undefined;
+
+  if (!lastSaved || !networkState.isConnected) {
+    // `lastSaved` won't be set on the first app boot
+    await AsyncStorage.setItem("@fetch", JSON.stringify(new Date().valueOf()));
+  } else {
+    if (new Date().valueOf() - lastSaved.valueOf() > 7 * daysInMs) {
+      // It has been more than 7 days since the last fetch, time to get an updated dictionary
+      const response = await FileSystem.downloadAsync(
+        "https://github.com/jokull/ensk-web/raw/main/src/dict.db",
+        DB_PATH
+      );
+      if (response.status >= 200 && response.status < 400) {
+        lastSaved = new Date();
+        await AsyncStorage.setItem(
+          "@fetch",
+          JSON.stringify(lastSaved.valueOf())
+        );
+        onUpdate();
+      }
+    }
+  }
 }
 
 interface Row {
@@ -128,7 +159,14 @@ async function getSearch(
 }
 
 function App() {
-  const { data: db } = useSWR("db", openDatabase);
+  const { data: db, mutate } = useSWR("db", openDatabase, {
+    onSuccess: (db) => {
+      updateDatabase(async () => {
+        await db.closeAsync();
+        mutate();
+      });
+    },
+  });
   return (
     <SafeAreaView style={[{ flex: 1, display: "flex" }]}>
       {db ? (
