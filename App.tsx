@@ -3,13 +3,31 @@ import * as FileSystem from "expo-file-system";
 import * as SQLite from "expo-sqlite";
 import { StatusBar } from "expo-status-bar";
 import Fuse from "fuse.js";
-import React, { useState } from "react";
-import { StyleSheet, Text, TextInput, View } from "react-native";
-import {
-  KeyboardAwareFlatList,
-  KeyboardAwareScrollView,
-} from "react-native-keyboard-aware-scroll-view";
+import React, { useEffect, useState } from "react";
+import { Text, TextInput, View } from "react-native";
+import { KeyboardAwareFlatList } from "react-native-keyboard-aware-scroll-view";
 import useSWR, { SWRConfig } from "swr";
+
+function useDebounce(value: string, delay: number = 200) {
+  // State and setters for debounced value
+  const [debouncedValue, setDebouncedValue] = useState(value);
+  useEffect(
+    () => {
+      // Update debounced value after delay
+      const handler = setTimeout(() => {
+        setDebouncedValue(value);
+      }, delay);
+      // Cancel the timeout if value changes (also on delay change or unmount)
+      // This is how we prevent debounced value from updating if value is changed ...
+      // .. within the delay period. Timeout gets cleared and restarted.
+      return () => {
+        clearTimeout(handler);
+      };
+    },
+    [value, delay] // Only re-call effect if value or delay changes
+  );
+  return debouncedValue;
+}
 
 function execute(db: SQLite.WebSQLDatabase, sql: string, args: string[] = []) {
   return new Promise<SQLite.ResultSet["rows"]>((resolve, reject) => {
@@ -25,6 +43,14 @@ function execute(db: SQLite.WebSQLDatabase, sql: string, args: string[] = []) {
 
 async function openDatabase(): Promise<SQLite.WebSQLDatabase> {
   const dbPath = FileSystem.documentDirectory + "SQLite/dict.db";
+  if (
+    !(await FileSystem.getInfoAsync(FileSystem.documentDirectory + "SQLite"))
+      .exists
+  ) {
+    await FileSystem.makeDirectoryAsync(
+      FileSystem.documentDirectory + "SQLite"
+    );
+  }
   if (!(await FileSystem.getInfoAsync(dbPath)).exists) {
     await FileSystem.downloadAsync(
       Asset.fromModule(require("./dict.db")).uri,
@@ -50,7 +76,8 @@ async function getRandom(db: SQLite.WebSQLDatabase): Promise<Row> {
       id, word, definition, ipa_uk, ipa_us
     from
       dictionary
-    order by RANDOM() limit 1
+    order by RANDOM()
+    limit 1;
     `
   );
   return results[0] as unknown as Row;
@@ -96,10 +123,27 @@ async function getSearch(
 function App() {
   const { data: db } = useSWR("db", openDatabase);
   return (
-    <>
-      {db ? <Search db={db} /> : <Text>Loading</Text>}
+    <View style={{ marginVertical: 16 }}>
+      {db ? (
+        <Search db={db} />
+      ) : (
+        <View
+          style={{ flex: 1, alignItems: "center", justifyContent: "center" }}
+        >
+          <Text
+            style={{
+              fontWeight: "400",
+              fontSize: 18,
+              textTransform: "uppercase",
+              letterSpacing: 3,
+            }}
+          >
+            Loading
+          </Text>
+        </View>
+      )}
       <StatusBar style="auto" />
-    </>
+    </View>
   );
 }
 
@@ -108,14 +152,28 @@ function Results({ results }: { results: Row[] }) {
     <KeyboardAwareFlatList
       data={results}
       keyExtractor={({ id }) => id}
-      style={{ padding: 12 }}
+      style={{ paddingVertical: 16, marginBottom: 150, paddingHorizontal: 16 }}
       renderItem={({ item: result }) => (
-        <View key={result.id} style={{ marginBottom: 8 }}>
+        <View
+          key={result.id}
+          style={{
+            paddingBottom: 12,
+            ...(result.id === results.at(-1)?.id
+              ? {}
+              : {
+                  borderBottomWidth: 1,
+                  borderBottomColor: "rgba(0, 0, 0, 0.1)",
+                  marginBottom: 12,
+                }),
+          }}
+        >
           <View>
-            <Text style={{ fontWeight: "bold" }}>{result.word}</Text>
+            <Text style={{ fontWeight: "500", fontSize: 18, marginBottom: 4 }}>
+              {result.word}
+            </Text>
           </View>
           <View>
-            <Text>{result.definition}</Text>
+            <Text style={{ fontSize: 14 }}>{result.definition}</Text>
           </View>
         </View>
       )}
@@ -124,28 +182,31 @@ function Results({ results }: { results: Row[] }) {
 }
 
 function Search({ db }: { db: SQLite.WebSQLDatabase }) {
-  // const [initial, setInitial] = useState<Row | null>(null);
   const [query, setQuery] = useState("");
-  const { data: random } = useSWR("random", getRandom);
-  const { data: results } = useSWR(`search/${query}`, () =>
-    query ? getSearch(db, query) : []
+  const debouncedQuery = useDebounce(query, 200)?.toLocaleLowerCase();
+  const { data: random } = useSWR("random", () => getRandom(db));
+  const { data: results, isValidating } = useSWR(
+    `search/${debouncedQuery || ""}`,
+    () => (debouncedQuery ? getSearch(db, debouncedQuery) : undefined)
   );
   return (
     <View style={{ width: "100%" }}>
       <View
         style={{
           position: "relative",
-          marginTop: 36,
+          marginTop: 24,
           marginBottom: 4,
-          marginHorizontal: 8,
+          marginHorizontal: 16,
         }}
       >
         <TextInput
           style={{
-            borderRadius: 6,
+            borderRadius: 8,
             backgroundColor: "#F0F0F0",
             paddingHorizontal: 12,
             paddingVertical: 12,
+            marginTop: 12,
+            fontSize: 18,
             width: "100%",
           }}
           keyboardType="web-search"
@@ -158,7 +219,15 @@ function Search({ db }: { db: SQLite.WebSQLDatabase }) {
           autoFocus={true}
         />
       </View>
-      <Results results={results || (random ? [random] : []) || []} />
+      <Results
+        results={
+          Array.isArray(results) && debouncedQuery && !isValidating
+            ? results
+            : random
+            ? [random]
+            : []
+        }
+      />
     </View>
   );
 }
@@ -182,10 +251,3 @@ export default function () {
     </SWRConfig>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#fff",
-  },
-});
