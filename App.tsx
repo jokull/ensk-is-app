@@ -4,8 +4,15 @@ import * as SQLite from "expo-sqlite";
 import { StatusBar } from "expo-status-bar";
 import Fuse from "fuse.js";
 import React, { useEffect, useState } from "react";
-import { Text, TextInput, View } from "react-native";
-import { KeyboardAwareFlatList } from "react-native-keyboard-aware-scroll-view";
+import {
+  FlatList,
+  KeyboardAvoidingView,
+  Platform,
+  SafeAreaView,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
 import useSWR, { SWRConfig } from "swr";
 
 function useDebounce(value: string, delay: number = 200) {
@@ -123,9 +130,16 @@ async function getSearch(
 function App() {
   const { data: db } = useSWR("db", openDatabase);
   return (
-    <View style={{ marginVertical: 16 }}>
+    <SafeAreaView style={[{ flex: 1, display: "flex" }]}>
       {db ? (
-        <Search db={db} />
+        <View
+          style={{
+            flex: 1,
+            height: "100%",
+          }}
+        >
+          <Search db={db} />
+        </View>
       ) : (
         <View
           style={{ flex: 1, alignItems: "center", justifyContent: "center" }}
@@ -143,83 +157,43 @@ function App() {
         </View>
       )}
       <StatusBar style="auto" />
-    </View>
-  );
-}
-
-function Results({ results }: { results: Row[] }) {
-  return (
-    <KeyboardAwareFlatList
-      data={results}
-      keyExtractor={({ id }) => id}
-      style={{ paddingVertical: 16, marginBottom: 150, paddingHorizontal: 16 }}
-      renderItem={({ item: result }) => (
-        <View
-          key={result.id}
-          style={{
-            paddingBottom: 12,
-            ...(result.id === results.at(-1)?.id
-              ? {}
-              : {
-                  borderBottomWidth: 1,
-                  borderBottomColor: "rgba(0, 0, 0, 0.1)",
-                  marginBottom: 12,
-                }),
-          }}
-        >
-          <View>
-            <Text style={{ fontWeight: "500", fontSize: 18, marginBottom: 4 }}>
-              {result.word}
-            </Text>
-          </View>
-          <View>
-            <Text style={{ fontSize: 14 }}>{result.definition}</Text>
-          </View>
-        </View>
-      )}
-    />
+    </SafeAreaView>
   );
 }
 
 function Search({ db }: { db: SQLite.WebSQLDatabase }) {
   const [query, setQuery] = useState("");
   const debouncedQuery = useDebounce(query, 200)?.toLocaleLowerCase();
-  const { data: random } = useSWR("random", () => getRandom(db));
+  const { data: random, mutate: refetchRandom } = useSWR("random", () =>
+    getRandom(db)
+  );
   const { data: results, isValidating } = useSWR(
     `search/${debouncedQuery || ""}`,
     () => (debouncedQuery ? getSearch(db, debouncedQuery) : undefined)
   );
   return (
-    <View style={{ width: "100%" }}>
-      <View
+    <>
+      <TextInput
         style={{
-          position: "relative",
-          marginTop: 24,
-          marginBottom: 4,
+          borderRadius: 8,
+          backgroundColor: "#F0F0F0",
+          paddingHorizontal: 12,
+          paddingVertical: 12,
           marginHorizontal: 16,
+          marginTop: 12,
+          fontSize: 18,
         }}
-      >
-        <TextInput
-          style={{
-            borderRadius: 8,
-            backgroundColor: "#F0F0F0",
-            paddingHorizontal: 12,
-            paddingVertical: 12,
-            marginTop: 12,
-            fontSize: 18,
-            width: "100%",
-          }}
-          keyboardType="web-search"
-          value={query}
-          onChangeText={(value) => {
-            setQuery(value);
-            // setInitial(null);
-          }}
-          placeholder="Leita að ensku orði"
-          autoFocus={true}
-        />
-      </View>
+        keyboardType="web-search"
+        value={query}
+        onChangeText={(value) => {
+          setQuery(value);
+          // setInitial(null);
+        }}
+        placeholder="Leita að ensku orði"
+        autoFocus={true}
+      />
       <Results
+        onRefresh={() => refetchRandom()}
         results={
           Array.isArray(results) && debouncedQuery && !isValidating
             ? results
@@ -228,7 +202,59 @@ function Search({ db }: { db: SQLite.WebSQLDatabase }) {
             : []
         }
       />
-    </View>
+    </>
+  );
+}
+
+function Results({
+  results,
+  onRefresh,
+}: {
+  results: Row[];
+  onRefresh: () => void;
+}) {
+  return (
+    <KeyboardAvoidingView
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
+      style={{ flex: 1 }}
+    >
+      <FlatList
+        data={results}
+        refreshing={false}
+        onRefresh={onRefresh}
+        style={{
+          paddingVertical: 16,
+          paddingHorizontal: 18,
+          height: "100%",
+        }}
+        renderItem={({ item: result }) => (
+          <View
+            key={result.id}
+            style={{
+              paddingBottom: 12,
+              ...(result.id === results.at(-1)?.id
+                ? { marginBottom: 100 }
+                : {
+                    borderBottomWidth: 1,
+                    borderBottomColor: "rgba(0, 0, 0, 0.1)",
+                    marginBottom: 12,
+                  }),
+            }}
+          >
+            <View>
+              <Text
+                style={{ fontWeight: "500", fontSize: 18, marginBottom: 4 }}
+              >
+                {result.word}
+              </Text>
+            </View>
+            <View>
+              <Text style={{ fontSize: 14 }}>{result.definition}</Text>
+            </View>
+          </View>
+        )}
+      />
+    </KeyboardAvoidingView>
   );
 }
 
